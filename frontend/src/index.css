@@ -1,0 +1,159 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-surface-900 text-slate-100 font-sans;
+    background-color: #0a0a0f;
+    min-height: 100vh;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #111118;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-surface-800 border border-slate-700/50 rounded-lg;
+  }
+
+  .card-header {
+    @apply px-4 py-3 border-b border-slate-700/50 flex items-center justify-between;
+  }
+
+  .stat-label {
+    @apply text-xs font-medium text-slate-400 uppercase tracking-widest;
+  }
+
+  .stat-value {
+    @apply text-2xl font-bold text-slate-100 leading-none;
+  }
+
+  .stat-unit {
+    @apply text-sm text-slate-400 ml-1;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+  }
+
+  .badge-formation {
+    @apply badge bg-blue-500/20 text-blue-300 border border-blue-500/30;
+  }
+
+  .badge-team-a {
+    @apply badge bg-blue-500/20 text-blue-300;
+  }
+
+  .badge-team-b {
+    @apply badge bg-red-500/20 text-red-300;
+  }
+
+  .progress-bar {
+    @apply h-1.5 rounded-full bg-slate-700 overflow-hidden;
+  }
+
+  .progress-fill {
+    @apply h-full rounded-full transition-all duration-500;
+    background: linear-gradient(90deg, #3b82f6, #06b6d4);
+  }
+
+  .nav-item {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium
+           text-slate-400 hover:text-slate-100 hover:bg-slate-700/50
+           transition-colors duration-150 cursor-pointer;
+  }
+
+  .nav-item.active {
+    @apply text-slate-100 bg-blue-600/20 border border-blue-500/30;
+  }
+
+  .btn {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+           transition-all duration-150 cursor-pointer select-none;
+  }
+
+  .btn-primary {
+    @apply btn bg-blue-600 hover:bg-blue-500 text-white border border-blue-500;
+  }
+
+  .btn-secondary {
+    @apply btn bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600;
+  }
+
+  .btn-danger {
+    @apply btn bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-500/30;
+  }
+
+  .input {
+    @apply w-full px-3 py-2 rounded-lg bg-surface-700 border border-slate-600
+           text-slate-100 text-sm placeholder-slate-500
+           focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500
+           transition-colors;
+  }
+
+  /* Pitch visualization */
+  .pitch-container {
+    background: linear-gradient(135deg, #0d3320 0%, #0f3d22 50%, #0d3320 100%);
+    border: 2px solid #1a5c2e;
+  }
+
+  /* Metric bar */
+  .metric-bar-fill {
+    background: linear-gradient(90deg, #3b82f6 0%, #06b6d4 100%);
+  }
+
+  /* Glow effects */
+  .glow-blue {
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
+  }
+
+  .glow-green {
+    box-shadow: 0 0 20px rgba(34, 197, 94, 0.2);
+  }
+
+  /* Animate pulse for processing */
+  @keyframes processing-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  .processing-indicator {
+    animation: processing-pulse 1.5s ease-in-out infinite;
+  }
+}
+
+/* Chart overrides */
+.recharts-text {
+  fill: #94a3b8 !important;
+  font-size: 11px;
+}
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+  stroke: #1e293b !important;
+}

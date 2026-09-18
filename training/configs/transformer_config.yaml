@@ -1,0 +1,23 @@
+# Temporal Formation Transformer — Training Configuration
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+data_dir: "training/datasets"
+output_dir: "models"
+
+# ── Sequence parameters ───────────────────────────────────────────────────────
+seq_len: 20          # Number of frames per training sequence
+n_players: 11        # Max players per team (padded if fewer detected)
+n_features: 4        # x, y, vx, vy per player
+
+# ── Model architecture ────────────────────────────────────────────────────────
+d_model: 128         # Transformer hidden dimension
+n_heads: 4           # Attention heads (must divide d_model)
+n_layers: 3          # Transformer encoder layers
+dropout: 0.1
+
+# ── Training ──────────────────────────────────────────────────────────────────
+batch_size: 32
+lr: 0.0003
+max_epochs: 100
+patience: 15         # Early stopping patience
+seed: 42
