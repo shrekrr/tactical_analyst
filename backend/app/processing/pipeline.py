@@ -168,6 +168,19 @@ def _run(session, match_id: str, sample_fps: int, yolo_model_path: str) -> None:
         pitch_width_m=settings.pitch_width_m,
     )
 
+    # ── Load trained formation classifier ─────────────────────────────────────
+    formation_model = None
+    _model_path = Path(__file__).parent.parent.parent.parent / "models" / "transformer" / "best_model.pt"
+    if _model_path.exists():
+        try:
+            from app.models.temporal_model import TransformerFormationClassifier
+            formation_model = TransformerFormationClassifier.load(str(_model_path))
+            logger.info("Loaded trained Transformer formation classifier from {}", _model_path)
+        except Exception as exc:
+            logger.warning("Could not load formation model ({}), using rule-based fallback.", exc)
+    else:
+        logger.info("No trained formation model at {} — using rule-based detector.", _model_path)
+
     _update_progress(session, match_id, 5)
 
     # ── Stage 1: Detection + Tracking ─────────────────────────────────────────
@@ -362,7 +375,7 @@ def _run(session, match_id: str, sample_fps: int, yolo_model_path: str) -> None:
     _update_progress(session, match_id, 85)
 
     # ── Stage 7: Formation detection ──────────────────────────────────────────
-    _detect_formations(session, match_id, match, source_fps, team_map, transformer)
+    _detect_formations(session, match_id, match, source_fps, team_map, transformer, formation_model)
     _update_progress(session, match_id, 95)
 
     # ── Stage 8: Mark complete ─────────────────────────────────────────────────
@@ -375,12 +388,21 @@ def _run(session, match_id: str, sample_fps: int, yolo_model_path: str) -> None:
     logger.info("Pipeline complete for match {}", match_id)
 
 
-def _detect_formations(session, match_id, match, source_fps, team_map, transformer):
-    """Detect formations at regular intervals throughout the match."""
+def _detect_formations(session, match_id, match, source_fps, team_map, transformer, formation_model=None):
+    """Detect formations at regular intervals using trained model + rule-based fallback."""
     from sqlalchemy import select as sa_select
     from app.models import Player, Team, TacticalEvent, TrackingPoint
 
-    INTERVAL_FRAMES = int(source_fps * 30)  # every 30 seconds
+    WINDOW = 20          # frames per sequence (same as training)
+    STEP = max(1, round(source_fps / 5))  # subsample to ~5fps (same as training)
+    INTERVAL_S = 30      # report formation every 30 seconds
+    INTERVAL_FRAMES = int(source_fps * INTERVAL_S)
+
+    use_model = formation_model is not None
+    N_PLAYERS = 11
+    N_FEATURES = 4
+    PITCH_L = 105.0
+    PITCH_W = 68.0
 
     for team_label, team_id in team_map.items():
         if team_label == "referee":
@@ -399,38 +421,72 @@ def _detect_formations(session, match_id, match, source_fps, team_map, transform
 
         player_ids = [p.id for p in player_result]
 
-        # Get unique frames
-        frame_result = session.execute(
-            sa_select(TrackingPoint.frame)
-            .where(TrackingPoint.player_id.in_(player_ids))
-            .distinct()
+        # Load all tracking points for this team, grouped by frame
+        tp_result = session.execute(
+            sa_select(TrackingPoint)
+            .where(
+                TrackingPoint.player_id.in_(player_ids),
+                TrackingPoint.pitch_x != None,
+            )
             .order_by(TrackingPoint.frame)
         ).scalars().all()
 
-        if not frame_result:
+        if not tp_result:
             continue
 
-        frames = sorted(frame_result)
+        # Group by frame
+        from collections import defaultdict
+        frame_positions = defaultdict(list)
+        for tp in tp_result:
+            frame_positions[tp.frame].append((tp.pitch_x, tp.pitch_y))
+
+        frames = sorted(frame_positions.keys())
+        # Subsample to ~5fps
+        frames = frames[::STEP]
+
         prev_formation = None
 
         for i, frame_no in enumerate(frames):
-            if i % INTERVAL_FRAMES != 0 and i != 0:
+            # Report at intervals
+            if i % max(1, int(INTERVAL_S * 5)) != 0 and i != 0:
                 continue
 
-            # Get positions at this frame
-            tp_result = session.execute(
-                sa_select(TrackingPoint).where(
-                    TrackingPoint.player_id.in_(player_ids),
-                    TrackingPoint.frame == frame_no,
-                    TrackingPoint.pitch_x != None,
-                )
-            ).scalars().all()
-
-            positions = [(tp.pitch_x, tp.pitch_y) for tp in tp_result]
+            positions = frame_positions[frame_no]
             if len(positions) < 5:
                 continue
 
-            formation, conf, explanation = detect_formation(positions)
+            formation = None
+            conf = 0.0
+            explanation = {}
+
+            # ── Try Transformer sliding-window inference ───────────────────────
+            if use_model and i >= WINDOW:
+                try:
+                    import numpy as np
+                    window_frames = frames[max(0, i - WINDOW):i]
+                    seq = np.zeros((WINDOW, N_PLAYERS * N_FEATURES), dtype=np.float32)
+                    prev_pos = None
+                    for t, wf in enumerate(window_frames[-WINDOW:]):
+                        pts = sorted(frame_positions[wf], key=lambda p: p[0])[:N_PLAYERS]
+                        pos = np.zeros((N_PLAYERS, 2), dtype=np.float32)
+                        for j, (px, py) in enumerate(pts):
+                            pos[j, 0] = px / PITCH_L
+                            pos[j, 1] = py / PITCH_W
+                        vel = np.clip((pos - prev_pos) * 5.0, -1.0, 1.0) if prev_pos is not None else np.zeros_like(pos)
+                        prev_pos = pos.copy()
+                        for j in range(N_PLAYERS):
+                            base = j * N_FEATURES
+                            seq[t, base:base + 4] = [pos[j, 0], pos[j, 1], vel[j, 0], vel[j, 1]]
+
+                    formation, conf, explanation = formation_model.predict(seq)
+                    explanation["method"] = "transformer"
+                except Exception as exc:
+                    logger.debug("Transformer inference failed at frame {}: {}", frame_no, exc)
+                    formation = None
+
+            # ── Fallback: rule-based ───────────────────────────────────────────
+            if not formation:
+                formation, conf, explanation = detect_formation(positions)
 
             if formation != prev_formation:
                 event = TacticalEvent(

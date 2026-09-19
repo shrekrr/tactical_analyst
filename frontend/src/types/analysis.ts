@@ -72,6 +72,7 @@ export interface TeamMetrics {
   total_distance_m: number | null;
   estimated_possession_pct: number | null;
   current_formation: string | null;
+  heatmap_grid: number[][] | null;  // [rows][cols] density grid, values in [0,1]
 }
 
 export interface TacticalEvent {

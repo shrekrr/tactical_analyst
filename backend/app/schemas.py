@@ -2,7 +2,7 @@
 Pydantic request/response schemas.
 """
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -115,6 +115,7 @@ class TeamMetrics(BaseModel):
     total_distance_m: Optional[float]
     estimated_possession_pct: Optional[float]
     current_formation: Optional[str]
+    heatmap_grid: Optional[List[List[float]]] = None  # rows x cols, values in [0,1]
 
 
 # ── Tactical schemas ──────────────────────────────────────────────────────────

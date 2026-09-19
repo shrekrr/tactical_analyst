@@ -14,6 +14,40 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Match, Player, Team, TrackingPoint
 from app.schemas import TeamMetrics
 
+HEATMAP_COLS = 32
+HEATMAP_ROWS = 21
+PITCH_L = 105.0
+PITCH_W = 68.0
+
+
+def compute_heatmap_grid(
+    tracking_points: list,
+    cols: int = HEATMAP_COLS,
+    rows: int = HEATMAP_ROWS,
+) -> List[List[float]]:
+    """
+    Build a normalised 2-D density grid from tracking points.
+
+    Returns a ``rows × cols`` nested list with values in [0, 1].
+    Row 0 = bottom of pitch (y=0), Row rows-1 = top (y=PITCH_W).
+    """
+    grid = np.zeros((rows, cols), dtype=np.float32)
+    for tp in tracking_points:
+        x = tp.pitch_x
+        y = tp.pitch_y
+        if x is None or y is None:
+            continue
+        col = int(np.clip(x / PITCH_L * cols, 0, cols - 1))
+        row = int(np.clip(y / PITCH_W * rows, 0, rows - 1))
+        grid[row, col] += 1.0
+
+    max_val = grid.max()
+    if max_val > 0:
+        grid /= max_val
+
+    return grid.tolist()
+
+
 
 def compute_team_width(positions: List[Tuple[float, float]]) -> float:
     """Lateral spread: max(y) - min(y) in metres."""
@@ -164,6 +198,8 @@ async def compute_team_summary(
         compactnesses.append(compute_compactness(positions))
         def_lines.append(compute_defensive_line(positions)["mean"])
 
+    heatmap_grid = compute_heatmap_grid(tps)
+
     return TeamMetrics(
         team_label=team.label,
         display_name=team.display_name or team.label,
@@ -175,4 +211,5 @@ async def compute_team_summary(
         total_distance_m=total_dist if total_dist else None,
         estimated_possession_pct=None,  # filled by possession module
         current_formation=None,          # filled by formation module
+        heatmap_grid=heatmap_grid,
     )

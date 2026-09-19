@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  ArrowLeft, Users, Activity, Loader2, AlertCircle, RefreshCw,
+  ArrowLeft, Users, Activity, Loader2, AlertCircle, Map,
 } from 'lucide-react';
 import {
   getMatch, getMatchAnalytics, getMatchStatus,
@@ -9,6 +9,7 @@ import {
 } from '../services/api';
 import type { MatchInfo, MatchAnalytics, FrameSnapshot, PlayerSummary, PlayerDetail } from '../types/analysis';
 import { Pitch } from '../components/Pitch';
+import { Heatmap } from '../components/Heatmap';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { PlayerCard } from '../components/PlayerCard';
 import { Timeline } from '../components/Timeline';
@@ -202,13 +203,35 @@ export const MatchAnalysis: React.FC = () => {
               </div>
               <div className="relative">
                 <Pitch
-                  snapshot={snapshot}
+                  snapshot={activeTab === 'pitch' ? snapshot : null}
                   showTrails={activeTab === 'pitch'}
                   trailHistory={trailHistory}
                   selectedPlayerId={selectedPlayer?.id}
                   onPlayerClick={handlePlayerClick}
                   className="w-full aspect-[105/68]"
                 />
+                {activeTab === 'heatmap' && teamA?.heatmap_grid && (
+                  <Heatmap
+                    data={teamA.heatmap_grid}
+                    teamColor={teamA.color_hex || '#3b82f6'}
+                    opacity={0.65}
+                  />
+                )}
+                {activeTab === 'heatmap' && teamB?.heatmap_grid && (
+                  <Heatmap
+                    data={teamB.heatmap_grid}
+                    teamColor={teamB.color_hex || '#f97316'}
+                    opacity={0.55}
+                  />
+                )}
+                {activeTab === 'heatmap' && !teamA?.heatmap_grid && (
+                  <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-xs bg-surface-900/50 rounded-lg">
+                    <div className="text-center">
+                      <Map size={20} className="mx-auto mb-1 opacity-40" />
+                      Heatmap data not available
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
