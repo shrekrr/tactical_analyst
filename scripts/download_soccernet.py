@@ -56,35 +56,68 @@ DEV_SUBSET_IDS = [
 
 
 def download_real(data_dir: Path, subset: str) -> None:
-    """Download via SoccerNet Python package."""
+    """
+    Download SoccerNet GameState-2024 via HuggingFace.
+
+    Dataset: SoccerNet/SN-GSR-2024 on HuggingFace
+    Contains: Labels-GameState.json (player tracks + pitch calibration per sequence)
+
+    Access: Request at https://huggingface.co/datasets/SoccerNet/SN-GSR-2024
+    Then set HF_TOKEN environment variable with your HuggingFace access token.
+    """
     try:
         from SoccerNet.Downloader import SoccerNetDownloader
     except ImportError:
-        print("ERROR: SoccerNet package not installed.")
-        print("  pip install SoccerNet")
+        print("ERROR: SoccerNet package not installed.  pip install SoccerNet")
         sys.exit(1)
 
-    password = os.environ.get("SOCCERNET_PASSWORD")
-    if not password:
-        print("ERROR: SOCCERNET_PASSWORD environment variable not set.")
-        print("  Register at https://www.soccer-net.org/ and export your password.")
-        sys.exit(1)
+    # HuggingFace token (optional — public if access already granted)
+    hf_token = os.environ.get("HF_TOKEN", "")
+    if hf_token:
+        try:
+            from huggingface_hub import login
+            login(token=hf_token, add_to_git_credential=False)
+            print(f"Logged in to HuggingFace.")
+        except ImportError:
+            print("huggingface_hub not installed — skipping HF login.")
 
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    # Download tracking annotations (no video — just annotations + calibration)
-    dl = SoccerNetDownloader(LocalDirectory=str(data_dir))
-    dl.password = password
+    splits = ["train", "valid", "test"] if subset == "full" else ["train", "valid"]
 
-    print(f"Downloading SoccerNet Tracking ({subset}) ...")
-    dl.downloadGames(
-        files=["Labels-GameState.json", "gameinfo.json"],
-        split=TRACKING_SPLITS if subset == "full" else ["train", "valid"],
-        task="gamestate",
+    print(f"Downloading SoccerNet GameState-2024 ({subset}: {splits}) ...")
+    print("  Source: HuggingFace — SoccerNet/SN-GSR-2024")
+    print("  (No password needed — access controlled via HuggingFace repo permissions)")
+
+    dl = SoccerNetDownloader(LocalDirectory=str(data_dir))
+
+    # The correct API: downloadDataTask with 'gamestate-2024'
+    # Downloads .zip files from HuggingFace and extracts to data_dir/gamestate-2024/
+    dl.downloadDataTask(
+        task="gamestate-2024",
+        split=splits,
         verbose=True,
+        source="HuggingFace",
     )
 
-    print(f"\nDownload complete. Data saved to: {data_dir}")
+    # The data lands in data_dir/gamestate-2024/{split}.zip — extract it
+    import zipfile
+    gsr_dir = data_dir / "gamestate-2024"
+    tracking_dir = data_dir / "tracking"
+    tracking_dir.mkdir(exist_ok=True)
+
+    for spl in splits:
+        zip_path = gsr_dir / f"{spl}.zip"
+        if zip_path.exists():
+            print(f"  Extracting {zip_path.name} ...")
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(tracking_dir / spl)
+            print(f"    -> {tracking_dir / spl}")
+        else:
+            print(f"  WARNING: {zip_path} not found — skipping.")
+
+    print(f"\nDownload complete. Tracking data at: {tracking_dir}")
+    print("You can now run: python scripts/prepare_tracking_data.py")
 
 
 def generate_mock(data_dir: Path) -> None:
