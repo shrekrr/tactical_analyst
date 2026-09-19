@@ -158,6 +158,9 @@ def label_window(frames: Dict[int, List], frame_ids: List[int]) -> int:
     return KNOWN_FORMATIONS.index(formation)
 
 
+TARGET_FPS = 5.0   # effective FPS we train on (subsample real 25fps data to this)
+
+
 def process_match_to_sequences(
     match_id: str,
     window: int,
@@ -165,6 +168,10 @@ def process_match_to_sequences(
 ) -> Tuple[List[np.ndarray], List[int], List[str]]:
     """
     Extract all sliding-window sequences from one match.
+
+    Real SoccerNet data is at 25 FPS; we subsample to TARGET_FPS (5) so that:
+      - Each window covers window/TARGET_FPS = 4 seconds of play
+      - Velocities remain in consistent units across all matches
 
     Returns
     -------
@@ -178,6 +185,16 @@ def process_match_to_sequences(
     if len(all_frame_ids) < window:
         return [], [], []
 
+    # Subsample: take every k-th frame to achieve TARGET_FPS
+    k = max(1, round(fps / TARGET_FPS))
+    all_frame_ids = all_frame_ids[::k]
+
+    if len(all_frame_ids) < window:
+        return [], [], []
+
+    # Effective FPS after subsampling (for velocity calculation)
+    effective_fps = fps / k
+
     sequences = []
     labels = []
     ids = []
@@ -188,7 +205,7 @@ def process_match_to_sequences(
         # Home team sequence
         home_label = label_window(frames_home, window_frames)
         if home_label >= 0:
-            home_seq = build_team_sequence(frames_home, window_frames, fps)
+            home_seq = build_team_sequence(frames_home, window_frames, effective_fps)
             sequences.append(home_seq)
             labels.append(home_label)
             ids.append(match_id)
@@ -196,7 +213,7 @@ def process_match_to_sequences(
         # Away team sequence
         away_label = label_window(frames_away, window_frames)
         if away_label >= 0:
-            away_seq = build_team_sequence(frames_away, window_frames, fps)
+            away_seq = build_team_sequence(frames_away, window_frames, effective_fps)
             sequences.append(away_seq)
             labels.append(away_label)
             ids.append(match_id)
