@@ -21,7 +21,8 @@ import yaml
 from loguru import logger
 
 ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(ROOT / "backend"))
+sys.path.insert(0, str(ROOT))           # makes 'training' importable
+sys.path.insert(0, str(ROOT / "backend"))  # makes 'app' importable
 
 from training.train import train
 
