@@ -1,0 +1,19 @@
+# MLP Formation Classifier — Training Config
+data_dir: "training/datasets"
+output_dir: "models"
+
+# Sequence parameters (must match create_sequences.py)
+seq_len: 20
+n_players: 11
+n_features: 4
+
+# MLP-specific
+hidden_dim: 256
+
+# Training
+batch_size: 64
+lr: 0.001
+max_epochs: 100
+patience: 15
+dropout: 0.3
+seed: 42

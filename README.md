@@ -25,132 +25,213 @@ Team Classification (K-Means on HSV histograms)
 Pitch Calibration & Homography (OpenCV)
     │
     ▼
-2D Coordinate Transformation
+2D Coordinate Transformation (metres)
     │
     ▼
 Analytics Engine
-├── Player metrics (distance, speed, heatmap, zones)
-├── Team metrics (width, depth, compactness, defensive line)
-├── Formation detection (rule-based K-Means + Temporal Transformer hook)
-├── Possession estimation (nearest-player + temporal smoothing)
-└── Tactical phase detection (positional heuristics)
+├── Player metrics  (distance, speed, heatmap, zones)
+├── Team metrics    (width, depth, compactness, defensive line)
+├── Formation       (rule-based K-Means → Temporal Transformer)
+├── Possession      (nearest-player + rolling-window smoothing)
+└── Tactical phases (positional heuristics)
     │
     ▼
 FastAPI REST + WebSocket backend
     │
     ▼
-React + TypeScript + Tailwind frontend
+React + TypeScript + Tailwind dashboard
 ```
+
+---
+
+## Dataset Sources
+
+### SoccerNet Tracking
+Primary dataset for player detection, tracking, and position data.
+
+- Register free at https://www.soccer-net.org/
+- Annotations: `Labels-GameState.json` per sequence (bounding boxes + calibration + track IDs)
+- Camera calibration included per sequence
+- Used for: player positions → sequence building → model training
+
+### SportsMOT _(planned extension)_
+Additional football tracking dataset for robustness. Currently not required for MVP.
+
+> **No proprietary broadcast footage is required or redistributed.**
+> Training uses open academic datasets only.
+
+---
+
+## Dataset Preparation
+
+### Quick Start (mock data — no account needed)
+```bash
+# Step 1: generate synthetic data that matches SoccerNet format
+python scripts/download_soccernet.py --mock
+
+# Step 2: convert to unified JSONL format
+python scripts/prepare_tracking_data.py
+
+# Step 3: build sliding-window sequences + weakly supervised labels
+python scripts/create_sequences.py --window 20 --stride 5
+
+# Step 4: inspect class balance and verify no leakage
+python scripts/inspect_dataset.py
+```
+
+### Real SoccerNet Data
+```bash
+# Register at https://www.soccer-net.org/ → get a password
+export SOCCERNET_PASSWORD="your_password_here"
+
+# Download dev subset (5 sequences, ~500 MB)
+python scripts/download_soccernet.py --subset dev
+
+# Then prepare + create as above
+python scripts/prepare_tracking_data.py
+python scripts/create_sequences.py --window 20 --stride 5
+```
+
+### Data Split Strategy
+Sequences are split **by match** (never by frame) to prevent leakage:
+
+| Split | Fraction | Example |
+|---|---|---|
+| Train | 80% | match_A, match_B, match_C |
+| Val | 10% | match_D |
+| Test | 10% | match_E |
+
+The `split_manifest.json` records the full assignment for reproducibility.
+
+### Label Strategy
+Formation labels are **weakly supervised** — derived from the rule-based K-Means detector, not human annotators. This is clearly documented in the `split_manifest.json` and displayed in the UI.
+
+---
+
+## Training
+
+### Supported Models
+
+| Model | Architecture | Temporal modeling |
+|---|---|---|
+| `mlp` | Linear → LayerNorm → GELU × 3 | None (flattened) |
+| `lstm` | BiLSTM (2 layers) → concat h_n → MLP | Sequential |
+| `transformer` | Pre-LN Transformer Encoder (3L, 4H) → pool → MLP | Attention-based |
+
+### Train a Single Model
+```bash
+# From project root
+PYTHONPATH=backend python training/train.py \
+    --model transformer \
+    --config training/configs/transformer_config.yaml
+```
+
+Replace `transformer` with `mlp` or `lstm` as needed.
+
+### Compare All Three Models
+```bash
+PYTHONPATH=backend python training/compare_models.py \
+    --config training/configs/transformer_config.yaml
+```
+
+Outputs a table like:
+```
+Model          Accuracy    Macro F1      Params    Train(s)
+──────────────────────────────────────────────────────────
+mlp              72.3%       0.681      52,748         12s
+lstm             78.1%       0.733     201,230         34s
+transformer      81.4%       0.772     301,194         51s
+```
+
+> **Note:** These metrics measure consistency with the rule-based detector (weakly supervised labels), not accuracy against human-annotated ground truth.
+
+### TensorBoard
+```bash
+tensorboard --logdir models/
+```
+
+### Checkpoints
+Best model per architecture saved to:
+```
+models/
+├── mlp/best_model.pt
+├── lstm/best_model.pt
+└── transformer/best_model.pt
+```
+
+Once `models/transformer/best_model.pt` exists, the backend automatically uses it instead of the rule-based fallback.
 
 ---
 
 ## Computer Vision Pipeline
 
-### 1. Frame Extraction
-OpenCV `VideoCapture` extracts frames at a configurable sample rate (default 5 FPS). This dramatically reduces computation while preserving tactical structure.
+### Detection — YOLOv8
+- Auto-detects CUDA at startup
+- Swappable via `ObjectDetector` ABC (`backend/app/detection/base.py`)
+- YOLOv8n weights auto-downloaded on first run (~6 MB)
 
-### 2. Player Detection — YOLOv8
-Uses `ultralytics` YOLOv8. Detects:
-- **player** (remapped from COCO `person` class)
-- **ball** (COCO `sports ball`)
-- **referee** (when using a football-specific model)
+### Tracking — ByteTrack
+- Persistent IDs across frames via ByteTrack (built into ultralytics `.track()`)
+- Handles occlusion and re-entry
 
-The `ObjectDetector` abstract base class allows swapping in any model without changing the pipeline.
+### Team Classification
+- Crops jersey region (upper 40% of bounding box, skipping head)
+- HSV histogram per player → K-Means (k=2) after accumulating samples
+- No team colours hardcoded
 
-### 3. Tracking — ByteTrack
-Uses the ByteTrack algorithm built into ultralytics `.track()`. Assigns persistent integer IDs across frames. Handles:
-- Temporary occlusion
-- Players crossing each other
-- Camera movement
-
-### 4. Team Classification
-For each tracked player:
-1. Crops the jersey region (upper 40% of bounding box, skipping the head)
-2. Converts to HSV colour space
-3. Computes a normalised 2D H+S histogram
-4. After accumulating samples, runs K-Means (k=2) to cluster into two teams
-5. Derives a representative hex colour per cluster
-
-No EPL team colours are hardcoded.
-
-### 5. Pitch Calibration & Homography
-Uses **semi-automatic calibration**: the user clicks known pitch landmarks (corners, penalty spots, centre circle) on the first video frame. OpenCV `findHomography` with RANSAC computes the 3×3 perspective transform matrix.
-
-This maps image-space pixel coordinates → pitch-space metre coordinates (origin = top-left, 105m × 68m standard pitch).
-
-### 6. Feature Engineering
-For each tracking point after homography:
-- **Distance**: Euclidean sum of consecutive pitch positions
-- **Speed**: distance / time, smoothed with Savitzky–Golay filter, converted to km/h
-- **Heatmap**: 2D histogram on a 26×17 grid (≈4m cells)
-- **Zone time**: Defensive / Middle / Attacking third fractions
-
-Team-level:
-- **Width**: max(y) − min(y)
-- **Depth**: max(x) − min(x)
-- **Centroid**: mean position of outfield players
-- **Compactness**: mean distance from centroid
-- **Defensive line**: mean X of the 4 deepest players
+### Pitch Calibration
+- User selects visible pitch landmarks in the first frame (UI)
+- OpenCV `findHomography` with RANSAC computes 3×3 perspective transform
+- Converts pixel coordinates → pitch-space metres (105m × 68m)
 
 ---
 
 ## Deep Learning — Temporal Transformer
 
+### Input Format
+```
+Shape: (batch, T=20, N×F)
+  T = window length (frames sampled at 5 FPS = 4 seconds)
+  N = 11 players (padded with zeros if fewer detected)
+  F = 4 features: normalised_x, normalised_y, velocity_x, velocity_y
+```
+
+### Normalization
+- `x / 105.0` → [0, 1]
+- `y / 68.0` → [0, 1]
+- velocities clipped to [-1, 1] (pitch-lengths per frame)
+
 ### Architecture
 ```
-Player Coordinates (T, N×F)
-        │
-Linear Feature Projection → d_model=128
-        │
+(batch, T, N×F)
+      ↓
+Linear Projection → d_model=128
+      ↓
 Sinusoidal Positional Encoding
-        │
+      ↓
 Transformer Encoder (3 layers, 4 heads, Pre-LN)
-        │
+      ↓
 Global Average Pooling over T
-        │
-MLP Classification Head
-        │
-Formation label + softmax confidence
+      ↓
+MLP Head (128 → 64 → n_classes)
+      ↓
+Formation logits (9 classes)
 ```
-
-**Input**: `(batch, T=20, N×F)` where N=11 players, F=4 (x, y, vx, vy)  
-**Output**: formation class logit (8 classes)
-
-The model requires training data (sequences of player coordinates labeled with ground-truth formations). Without trained weights, the system falls back to the rule-based formation detector.
-
-### Rule-Based Baseline
-1. Collect outfield player X coordinates
-2. K-Means cluster into 3–4 rows
-3. Count players per row (sorted defensive → attacking)
-4. Map count string → formation label
-5. Return closest known formation by edit distance
-
-### Training
-```bash
-cd epl-tactical-analyst
-python training/train.py --config training/configs/transformer_config.yaml
-```
-
-Training data must be placed in `training/datasets/`:
-- `sequences.npy` — shape `(N, T, n_players × n_features)`
-- `labels.npy` — shape `(N,)` integer class indices
-
-See `training/configs/transformer_config.yaml` for all hyperparameters.
 
 ---
 
-## Evaluation Metrics
+## Evaluation
 
-| Component | Metrics |
-|---|---|
-| Detection | mAP, Precision, Recall |
-| Tracking | IDF1, MOTA, ID switches |
-| Formation (rule-based) | — (deterministic) |
-| Formation (Transformer) | Accuracy, Macro F1, Confusion Matrix |
-| Tactical phases | Accuracy, Macro F1 |
-| Speed estimation | Labelled "AI-estimated" — not GPS-grade |
+Run evaluation on a trained model:
+```bash
+PYTHONPATH=backend python training/evaluate.py \
+    --model-path models/transformer/best_model.pt \
+    --model-type transformer
+```
 
-> ⚠️ **Without training data**, the Temporal Transformer cannot be evaluated. The rule-based baseline is used by default. All metrics are computed on held-out test splits — never fabricated.
+Output:
+- `models/transformer/metrics.json` — accuracy, macro F1, precision, recall
+- `models/transformer/confusion_matrix.png` — per-class confusion matrix
 
 ---
 
@@ -159,18 +240,18 @@ See `training/configs/transformer_config.yaml` for all hyperparameters.
 ### Prerequisites
 - Python 3.10+
 - Node.js 20+
-- CUDA-capable GPU (optional but recommended)
+- NVIDIA GPU recommended (CUDA auto-detected)
 
 ### Backend
 ```bash
 cd backend
 python -m venv venv
-# Windows:
-venv\Scripts\activate
-# macOS/Linux:
-source venv/bin/activate
+venv\Scripts\activate   # Windows
+# source venv/bin/activate  # macOS/Linux
 
 pip install -r requirements.txt
+
+# Start API server
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -179,45 +260,97 @@ uvicorn app.main:app --reload --port 8000
 cd frontend
 npm install
 npm run dev
+# Open http://localhost:5173
 ```
 
-Open http://localhost:5173
+---
+
+## Running Tests
+```bash
+# From project root
+PYTHONPATH=backend python -m pytest tests/ -v
+
+# Output: 58 passed
+```
+
+Tests cover:
+- Distance, speed, zone analytics
+- Homography transforms
+- Rule-based formation detection
+- Model forward passes (MLP, LSTM, Transformer)
+- Sequence building, split integrity, augmentation
 
 ---
 
-## Running Locally
+## User Flow
 
-1. Start backend: `uvicorn app.main:app --reload`
-2. Start frontend: `npm run dev`
-3. Open http://localhost:5173
-4. Click **Upload Match** and select a football video
-5. Set sample FPS (5 recommended)
-6. Click **Upload & Analyze**
-7. Wait for processing to complete (visible progress bar)
-8. Click **View Analysis** to open the dashboard
+1. Open `http://localhost:5173` → **Dashboard**
+2. Click **Upload Match** → drag a football video (MP4/MOV/AVI/MKV)
+3. Select analysis FPS (5 recommended) → **Upload & Analyze**
+4. Watch the progress bar (detection → tracking → calibration → analytics)
+5. Click **View Analysis** → split view: video + 2D pitch
+6. Click any player dot → Player detail (speed chart, heatmap, zone %)
+7. Click timeline entries → seek video to formation change
 
-### Pitch Calibration
-After uploading, you'll be prompted to calibrate the pitch by clicking known landmarks on the first video frame. The system uses these to compute the homography matrix. Without calibration, tracking is displayed in image-space (pixels) rather than pitch-space (metres).
+> **Pitch calibration**: For metre-accurate coordinates, submit `POST /api/matches/{id}/calibrate` with 4+ image→pitch point correspondences after uploading.
 
 ---
 
-## GPU Requirements
-The system auto-detects CUDA. If available, YOLO inference runs on GPU. Without CUDA, it falls back to CPU (significantly slower).
+## GPU Support
 
-Minimum GPU: 4 GB VRAM for YOLOv8n  
-Recommended: 8 GB VRAM for larger models
+CUDA auto-detected at startup. No configuration needed:
+```python
+device = "cuda" if torch.cuda.is_available() else "cpu"
+```
+
+Minimum VRAM for YOLOv8n: 4 GB.
+Tested on: RTX 4050 laptop GPU.
 
 ---
 
 ## Limitations
 
-1. **Speed estimates** are derived from video pixel movement and homography — not GPS. Labelled "AI-estimated" throughout the UI.
-2. **Pitch calibration** requires manual keypoint selection. Fully automatic pitch-line detection is a future extension.
-3. **Team classification** uses colour clustering — accuracy degrades with similar jersey colours or when the camera angle makes jerseys indistinguishable.
-4. **Formation detection** at MVP uses rule-based K-Means clustering. A trained Temporal Transformer is architecturally included but requires labeled training data.
-5. **No real-time processing** — the system processes uploaded clips offline.
-6. **Tracking ID switches** may occur during heavy occlusion.
-7. **Ball detection** is often unreliable in low-resolution or blurry footage.
+1. Speed estimates derived from video pixel movement + homography — not GPS-grade.
+2. Pitch calibration requires manual landmark selection.
+3. Team classification degrades when jersey colours are similar.
+4. Formation labels are weakly supervised (rule-based, not human-annotated).
+5. No real-time processing — offline clips only.
+6. Ball detection unreliable in low-resolution or blurry footage.
+7. Tracking ID switches may occur during heavy occlusion.
+
+---
+
+## Repository Structure
+
+```
+tactical_analyst/
+├── frontend/              React + TypeScript + Vite + Tailwind UI
+├── backend/
+│   └── app/
+│       ├── api/           FastAPI endpoints
+│       ├── detection/     YOLOv8 detector (swappable ABC)
+│       ├── tracking/      ByteTrack wrapper
+│       ├── teams/         K-Means team classifier
+│       ├── pitch/         Calibration + homography
+│       ├── analytics/     Player + team metrics + formation
+│       ├── models/        MLP, LSTM, Temporal Transformer
+│       └── processing/    Pipeline orchestrator
+├── training/
+│   ├── preprocessing/     Dataset + augmentation
+│   ├── configs/           YAML hyperparameter files
+│   ├── train.py           Unified training factory
+│   ├── compare_models.py  MLP vs LSTM vs Transformer
+│   └── evaluate.py        Confusion matrix + metrics
+├── scripts/
+│   ├── download_soccernet.py     Download or mock data
+│   ├── prepare_tracking_data.py  MOT → JSONL
+│   ├── create_sequences.py       Build training arrays
+│   └── inspect_dataset.py        Class balance + split check
+├── tests/                 58 unit tests (pytest)
+├── data/                  raw/ processed/ (gitignored)
+├── models/                Trained weights (gitignored)
+└── docker-compose.yml
+```
 
 ---
 
@@ -227,36 +360,11 @@ Recommended: 8 GB VRAM for larger models
 - Jersey number recognition
 - Pass / shot / carry event detection
 - Expected Threat (xT) computation
-- Pressing intensity maps
 - Live analysis pipeline
-- Multimodal commentary + video analysis
-- Natural-language tactical querying
-- Player identity recognition
+- Natural-language tactical querying (LLM + computed stats only)
+- Player identity recognition across matches
 - Match-to-match tactical comparison
-
----
-
-## Repository Structure
-
-```
-epl-tactical-analyst/
-├── frontend/          React + TypeScript + Vite + Tailwind UI
-├── backend/
-│   └── app/
-│       ├── api/       FastAPI endpoints
-│       ├── detection/ YOLO detector (swappable)
-│       ├── tracking/  ByteTrack wrapper
-│       ├── teams/     K-Means team classifier
-│       ├── pitch/     Calibration + homography
-│       ├── analytics/ Player + team metrics + formation
-│       ├── models/    Temporal Transformer
-│       └── processing/ Pipeline orchestrator
-├── training/          Train + evaluate the Transformer
-├── models/            Trained weight files (not committed)
-├── data/              Uploaded videos + results (not committed)
-├── notebooks/         Exploration notebooks
-└── docker-compose.yml
-```
+- SportsMOT integration for tracking robustness
 
 ---
 
@@ -264,4 +372,4 @@ epl-tactical-analyst/
 
 MIT — see LICENSE file.
 
-> This project is for educational and research purposes. It is not affiliated with the Premier League or any official broadcast organisation.
+> For educational and research purposes. Not affiliated with the Premier League or any official broadcast organisation.

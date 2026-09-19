@@ -42,13 +42,25 @@ frontend/.cache/
 # Data / Videos (large files)
 data/videos/*
 data/results/*
+data/raw/*
+data/processed/*
 !data/videos/.gitkeep
 !data/results/.gitkeep
+!data/raw/.gitkeep
+!data/processed/.gitkeep
 
-# Model weights
-models/*.pt
-models/*.pth
-models/*.onnx
+# Training datasets (large numpy arrays)
+training/datasets/*.npy
+training/datasets/split_manifest.json
+
+# Model weights and TensorBoard runs
+models/**/*.pt
+models/**/*.pth
+models/**/*.onnx
+models/**/runs/
+models/comparison.json
+models/*/metrics.json
+models/*/confusion_matrix.png
 !models/.gitkeep
 
 # Database

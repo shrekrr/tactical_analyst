@@ -1,227 +1,254 @@
 """
-Training script for the Temporal Formation Transformer.
+Unified training script for formation classifiers.
+
+Supports: mlp | lstm | transformer
 
 Usage
 -----
-    python training/train.py --config training/configs/transformer_config.yaml
+    python training/train.py --model transformer --config training/configs/transformer_config.yaml
+    python training/train.py --model lstm        --config training/configs/lstm_config.yaml
+    python training/train.py --model mlp         --config training/configs/mlp_config.yaml
 
-The training loop includes:
-- Train / validation / test split
-- Early stopping
-- TensorBoard logging
-- Checkpoint saving
-- Learning-rate scheduling
+TensorBoard logs:
+    tensorboard --logdir models/
 """
 from __future__ import annotations
 
 import argparse
 import json
 import random
+import sys
+import time
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset, random_split
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import yaml
 from loguru import logger
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
+ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(ROOT / "backend"))
 
-from app.models.temporal_model import TemporalFormationTransformer
 from app.analytics.formation import KNOWN_FORMATIONS
+from training.preprocessing.soccernet_loader import FormationSequenceDataset
 
 
-# ── Dataset ───────────────────────────────────────────────────────────────────
+# ── Model factory ─────────────────────────────────────────────────────────────
 
-def load_dataset(data_dir: Path, seq_len: int, n_players: int, n_features: int):
-    """
-    Load pre-processed sequences from .npy files.
+def build_model(model_type: str, config: dict) -> nn.Module:
+    """Return the correct model class given model_type."""
+    n_classes = len(KNOWN_FORMATIONS)
+    seq_len = config["seq_len"]
+    n_players = config["n_players"]
+    n_features = config["n_features"]
+    dropout = config.get("dropout", 0.1)
 
-    Expected files:
-        data/sequences.npy   shape (N, T, n_players * n_features)
-        data/labels.npy      shape (N,)  integer class indices
-    """
-    seq_path = data_dir / "sequences.npy"
-    lbl_path = data_dir / "labels.npy"
-
-    if not seq_path.exists() or not lbl_path.exists():
-        logger.warning("No dataset found at {}. Using synthetic data for demonstration.", data_dir)
-        X, y = _generate_synthetic(n_samples=200, seq_len=seq_len,
-                                   n_players=n_players, n_features=n_features)
+    if model_type == "mlp":
+        from app.models.mlp_model import MLPFormationClassifier
+        return MLPFormationClassifier(
+            seq_len=seq_len,
+            n_players=n_players,
+            n_features=n_features,
+            hidden_dim=config.get("hidden_dim", 256),
+            n_classes=n_classes,
+            dropout=dropout,
+        )
+    elif model_type == "lstm":
+        from app.models.lstm_model import LSTMFormationClassifier
+        return LSTMFormationClassifier(
+            n_players=n_players,
+            n_features=n_features,
+            lstm_input_dim=config.get("lstm_input_dim", 64),
+            lstm_hidden_dim=config.get("lstm_hidden_dim", 128),
+            n_layers=config.get("n_layers", 2),
+            n_classes=n_classes,
+            dropout=dropout,
+        )
+    elif model_type == "transformer":
+        from app.models.temporal_model import TemporalFormationTransformer
+        return TemporalFormationTransformer(
+            n_players=n_players,
+            n_features=n_features,
+            d_model=config.get("d_model", 128),
+            n_heads=config.get("n_heads", 4),
+            n_layers=config.get("n_layers", 3),
+            n_classes=n_classes,
+            seq_len=seq_len,
+            dropout=dropout,
+        )
     else:
-        X = np.load(str(seq_path)).astype(np.float32)
-        y = np.load(str(lbl_path)).astype(np.int64)
-        logger.info("Loaded dataset: X={} y={}", X.shape, y.shape)
-
-    return torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.long)
+        raise ValueError(f"Unknown model type: {model_type}. Choose mlp | lstm | transformer")
 
 
-def _generate_synthetic(
-    n_samples: int, seq_len: int, n_players: int, n_features: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """Generate random synthetic sequences for architecture validation."""
-    logger.warning("Using synthetic data — model will not produce meaningful results.")
-    X = np.random.randn(n_samples, seq_len, n_players * n_features).astype(np.float32)
-    y = np.random.randint(0, len(KNOWN_FORMATIONS), n_samples).astype(np.int64)
-    return X, y
+def count_params(model: nn.Module) -> int:
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 # ── Training loop ─────────────────────────────────────────────────────────────
 
-def train(config: dict) -> None:
-    # ── Seed ──────────────────────────────────────────────────────────────────
+def train(model_type: str, config: dict) -> dict:
     seed = config.get("seed", 42)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info("Training device: {}", device)
+    logger.info("Device: {}  (CUDA: {})", device, torch.cuda.is_available())
+    if device == "cuda":
+        logger.info("GPU: {}", torch.cuda.get_device_name(0))
 
-    # ── Hyperparameters ────────────────────────────────────────────────────────
-    seq_len     = config["seq_len"]
-    n_players   = config["n_players"]
-    n_features  = config["n_features"]
-    d_model     = config["d_model"]
-    n_heads     = config["n_heads"]
-    n_layers    = config["n_layers"]
-    dropout     = config["dropout"]
-    batch_size  = config["batch_size"]
-    lr          = config["lr"]
-    max_epochs  = config["max_epochs"]
-    patience    = config["patience"]
-    output_dir  = Path(config["output_dir"])
+    # ── Config ────────────────────────────────────────────────────────────────
+    seq_len = config["seq_len"]
+    batch_size = config["batch_size"]
+    lr = config["lr"]
+    max_epochs = config["max_epochs"]
+    patience = config["patience"]
+    output_dir = Path(config["output_dir"]) / model_type
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Dataset ────────────────────────────────────────────────────────────────
-    data_dir = Path(config.get("data_dir", "training/datasets"))
-    X, y = load_dataset(data_dir, seq_len, n_players, n_features)
-    dataset = TensorDataset(X, y)
+    datasets_dir = Path(config.get("data_dir", "training/datasets"))
 
-    n_total = len(dataset)
-    n_test  = max(1, int(n_total * 0.1))
-    n_val   = max(1, int(n_total * 0.15))
-    n_train = n_total - n_val - n_test
+    # ── Datasets ──────────────────────────────────────────────────────────────
+    logger.info("Loading datasets from {}", datasets_dir)
+    train_ds = FormationSequenceDataset("train", datasets_dir, augment=True, seq_len=seq_len)
+    val_ds   = FormationSequenceDataset("val",   datasets_dir, augment=False, seq_len=seq_len)
+    test_ds  = FormationSequenceDataset("test",  datasets_dir, augment=False, seq_len=seq_len)
 
-    train_ds, val_ds, test_ds = random_split(
-        dataset, [n_train, n_val, n_test],
-        generator=torch.Generator().manual_seed(seed),
-    )
+    logger.info("Sequences — train: {}  val: {}  test: {}", len(train_ds), len(val_ds), len(test_ds))
 
-    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
-    val_dl   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=0)
-    test_dl  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False, num_workers=0)
+    if len(train_ds) == 0:
+        raise RuntimeError("Training set is empty. Run scripts/create_sequences.py first.")
 
-    # ── Model ──────────────────────────────────────────────────────────────────
-    model_config = dict(
-        n_players=n_players,
-        n_features=n_features,
-        d_model=d_model,
-        n_heads=n_heads,
-        n_layers=n_layers,
-        n_classes=len(KNOWN_FORMATIONS),
-        seq_len=seq_len,
-        dropout=dropout,
-    )
-    model = TemporalFormationTransformer(**model_config).to(device)
-    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info("Model parameters: {:,}", n_params)
+    # Class-weighted loss for imbalanced labels
+    class_weights = train_ds.class_weights().to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
 
-    # ── Optimizer + scheduler ─────────────────────────────────────────────────
+    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=0, pin_memory=(device == "cuda"))
+    val_dl   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=(device == "cuda"))
+    test_dl  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=(device == "cuda"))
+
+    # ── Model ─────────────────────────────────────────────────────────────────
+    model = build_model(model_type, config).to(device)
+    n_params = count_params(model)
+    logger.info("Model: {}  Params: {:,}", model_type, n_params)
+
+    # ── Optimizer ─────────────────────────────────────────────────────────────
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs)
-    criterion = nn.CrossEntropyLoss()
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs, eta_min=lr * 0.01)
 
     # ── TensorBoard ───────────────────────────────────────────────────────────
     writer = SummaryWriter(log_dir=str(output_dir / "runs"))
 
-    # ── Training loop ─────────────────────────────────────────────────────────
+    # ── Training ──────────────────────────────────────────────────────────────
     best_val_loss = float("inf")
     no_improve = 0
     best_ckpt = output_dir / "best_model.pt"
+    model_config = {k: v for k, v in config.items() if k not in ("output_dir", "data_dir")}
+
+    train_start = time.time()
 
     for epoch in range(1, max_epochs + 1):
-        # Train
+        # Train epoch
         model.train()
-        train_loss, train_correct, train_total = 0.0, 0, 0
+        t_loss = t_correct = t_total = 0
         for Xb, yb in train_dl:
             Xb, yb = Xb.to(device), yb.to(device)
             optimizer.zero_grad()
             logits = model(Xb)
             loss = criterion(logits, yb)
             loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            train_loss += loss.item() * len(Xb)
-            train_correct += (logits.argmax(1) == yb).sum().item()
-            train_total += len(Xb)
+            t_loss += loss.item() * len(Xb)
+            t_correct += (logits.argmax(1) == yb).sum().item()
+            t_total += len(Xb)
 
-        # Validate
+        # Validation epoch
         model.eval()
-        val_loss, val_correct, val_total = 0.0, 0, 0
+        v_loss = v_correct = v_total = 0
         with torch.no_grad():
             for Xb, yb in val_dl:
                 Xb, yb = Xb.to(device), yb.to(device)
                 logits = model(Xb)
                 loss = criterion(logits, yb)
-                val_loss += loss.item() * len(Xb)
-                val_correct += (logits.argmax(1) == yb).sum().item()
-                val_total += len(Xb)
+                v_loss += loss.item() * len(Xb)
+                v_correct += (logits.argmax(1) == yb).sum().item()
+                v_total += len(Xb)
 
-        train_loss /= train_total
-        val_loss /= val_total
-        train_acc = train_correct / train_total
-        val_acc = val_correct / val_total
+        t_loss /= max(t_total, 1)
+        v_loss /= max(v_total, 1)
+        t_acc = t_correct / max(t_total, 1)
+        v_acc = v_correct / max(v_total, 1)
 
         scheduler.step()
 
-        writer.add_scalar("Loss/train", train_loss, epoch)
-        writer.add_scalar("Loss/val", val_loss, epoch)
-        writer.add_scalar("Accuracy/train", train_acc, epoch)
-        writer.add_scalar("Accuracy/val", val_acc, epoch)
+        writer.add_scalar(f"{model_type}/Loss/train", t_loss, epoch)
+        writer.add_scalar(f"{model_type}/Loss/val",   v_loss, epoch)
+        writer.add_scalar(f"{model_type}/Acc/train",  t_acc,  epoch)
+        writer.add_scalar(f"{model_type}/Acc/val",    v_acc,  epoch)
 
         logger.info(
             "Epoch {:3d}/{} | train loss={:.4f} acc={:.3f} | val loss={:.4f} acc={:.3f}",
-            epoch, max_epochs, train_loss, train_acc, val_loss, val_acc,
+            epoch, max_epochs, t_loss, t_acc, v_loss, v_acc,
         )
 
         # Early stopping
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if v_loss < best_val_loss:
+            best_val_loss = v_loss
             no_improve = 0
-            torch.save(
-                {"model_state_dict": model.state_dict(), "config": model_config},
-                str(best_ckpt),
-            )
-            logger.info("  ✓ Checkpoint saved (val_loss={:.4f})", val_loss)
+            torch.save({
+                "model_state_dict": model.state_dict(),
+                "config": model_config,
+                "model_type": model_type,
+                "epoch": epoch,
+                "val_loss": v_loss,
+                "val_acc": v_acc,
+            }, str(best_ckpt))
+            logger.info("  ✓ Saved checkpoint (val_loss={:.4f})", v_loss)
         else:
             no_improve += 1
             if no_improve >= patience:
                 logger.info("Early stopping at epoch {}", epoch)
                 break
 
+    train_time_s = time.time() - train_start
     writer.close()
 
     # ── Test evaluation ───────────────────────────────────────────────────────
+    logger.info("Running test evaluation for {} ...", model_type)
+    ckpt = torch.load(str(best_ckpt), map_location=device)
+    model.load_state_dict(ckpt["model_state_dict"])
+
     from training.evaluate import evaluate_model
-    logger.info("Running test evaluation...")
-    model.load_state_dict(torch.load(str(best_ckpt), map_location=device)["model_state_dict"])
-    evaluate_model(model, test_dl, device, KNOWN_FORMATIONS, output_dir)
+    metrics = evaluate_model(model, test_dl, device, KNOWN_FORMATIONS, output_dir)
+    metrics["model_type"] = model_type
+    metrics["n_params"] = n_params
+    metrics["train_time_s"] = round(train_time_s, 1)
+    metrics["best_val_loss"] = round(best_val_loss, 5)
 
-    logger.info("Training complete. Best model saved to {}", best_ckpt)
+    with open(output_dir / "metrics.json", "w") as f:
+        json.dump(metrics, f, indent=2)
 
+    logger.info("Training complete for {}. Best model: {}", model_type, best_ckpt)
+    return metrics
+
+
+# ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="training/configs/transformer_config.yaml")
+    parser = argparse.ArgumentParser(description="Train formation classifier")
+    parser.add_argument("--model", choices=["mlp", "lstm", "transformer"],
+                        required=True, help="Model architecture to train")
+    parser.add_argument("--config", type=str, required=True,
+                        help="Path to YAML config file")
     args = parser.parse_args()
 
     with open(args.config) as f:
         config = yaml.safe_load(f)
 
-    train(config)
+    train(args.model, config)

@@ -1,0 +1,21 @@
+# Bidirectional LSTM Formation Classifier — Training Config
+data_dir: "training/datasets"
+output_dir: "models"
+
+# Sequence parameters (must match create_sequences.py)
+seq_len: 20
+n_players: 11
+n_features: 4
+
+# LSTM-specific
+lstm_input_dim: 64
+lstm_hidden_dim: 128
+n_layers: 2
+
+# Training
+batch_size: 32
+lr: 0.0005
+max_epochs: 100
+patience: 15
+dropout: 0.2
+seed: 42

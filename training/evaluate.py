@@ -74,9 +74,14 @@ def evaluate_model(
     macro_r = float(recall_score(all_labels, all_preds, average="macro", zero_division=0))
     macro_f1 = float(f1_score(all_labels, all_preds, average="macro", zero_division=0))
 
+    # Only include labels that actually appear in test set
+    present_labels = sorted(set(all_labels.tolist()) | set(all_preds.tolist()))
+    present_names = [class_names[i] for i in present_labels if i < len(class_names)]
+
     report = classification_report(
         all_labels, all_preds,
-        target_names=class_names[:len(set(all_labels))],
+        labels=present_labels,
+        target_names=present_names,
         zero_division=0,
     )
 
