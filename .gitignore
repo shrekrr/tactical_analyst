@@ -44,6 +44,11 @@ data/videos/*
 data/results/*
 data/raw/*
 data/processed/*
+backend/data/
+*.mp4
+*.mov
+*.avi
+*.mkv
 !data/videos/.gitkeep
 !data/results/.gitkeep
 !data/raw/.gitkeep
