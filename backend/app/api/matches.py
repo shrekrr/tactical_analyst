@@ -2,13 +2,16 @@
 Match data retrieval endpoints.
 """
 import json
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import settings
 from app.database import get_db
 from app.models import Match, Player, TacticalEvent, Team, TrackingPoint, BallTrackingPoint
 from app.schemas import (
@@ -42,6 +45,35 @@ async def get_match(match_id: str, db: AsyncSession = Depends(get_db)):
     return MatchInfoResponse.model_validate(match)
 
 
+@router.get("/{match_id}/video")
+async def get_match_video(match_id: str, db: AsyncSession = Depends(get_db)):
+    """Serve video for a match with support for range requests."""
+    result = await db.execute(select(Match).where(Match.id == match_id))
+    match = result.scalar_one_or_none()
+    if match is None:
+        raise HTTPException(status_code=404, detail="Match not found.")
+
+    video_path = None
+    if match.video_path and Path(match.video_path).exists():
+        video_path = Path(match.video_path)
+    else:
+        for ext in [".mp4", ".mov", ".avi", ".mkv"]:
+            candidate = settings.videos_dir / f"{match_id}{ext}"
+            if candidate.exists():
+                video_path = candidate
+                break
+
+    if not video_path:
+        raise HTTPException(status_code=404, detail="Video file not found on server.")
+
+    return FileResponse(
+        str(video_path),
+        media_type="video/mp4",
+        filename=match.filename or video_path.name,
+    )
+
+
+
 @router.get("/{match_id}/analytics", response_model=MatchAnalyticsResponse)
 async def get_analytics(match_id: str, db: AsyncSession = Depends(get_db)):
     """Return full analytics for a completed match."""
@@ -64,7 +96,23 @@ async def get_analytics(match_id: str, db: AsyncSession = Depends(get_db)):
         await compute_team_summary(db, match, team) for team in match.teams
     ]
     players_out = [
-        PlayerSummary.model_validate(p) for p in match.players
+        PlayerSummary(
+            id=p.id,
+            tracking_id=p.tracking_id,
+            team_label=p.team.label if p.team else None,
+            team_color=p.team.color_hex if p.team else "#888888",
+            total_distance_m=p.total_distance_m,
+            avg_speed_kmh=p.avg_speed_kmh,
+            max_speed_kmh=p.max_speed_kmh,
+            avg_x=p.avg_x,
+            avg_y=p.avg_y,
+            pct_defensive_third=p.pct_defensive_third,
+            pct_middle_third=p.pct_middle_third,
+            pct_attacking_third=p.pct_attacking_third,
+            is_goalkeeper=p.is_goalkeeper,
+            is_referee=p.is_referee,
+        )
+        for p in match.players
     ]
     events_out = [
         TacticalEventOut.model_validate(e) for e in match.tactical_events

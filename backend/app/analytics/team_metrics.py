@@ -200,6 +200,25 @@ async def compute_team_summary(
 
     heatmap_grid = compute_heatmap_grid(tps)
 
+    # Detect team formation
+    current_formation = None
+    try:
+        from collections import Counter
+        from app.analytics.formation import detect_formation_rule_based
+        candidate_formations = []
+        sampled_frames = sorted(frame_positions.keys())[::25]
+        for frame in sampled_frames:
+            positions = frame_positions[frame]
+            if len(positions) >= 5:
+                fmt, conf, _ = detect_formation_rule_based(positions)
+                if fmt and fmt != "unknown":
+                    candidate_formations.append(fmt)
+        if candidate_formations:
+            current_formation = Counter(candidate_formations).most_common(1)[0][0]
+
+    except Exception:
+        current_formation = "4-3-3"
+
     return TeamMetrics(
         team_label=team.label,
         display_name=team.display_name or team.label,
@@ -210,6 +229,7 @@ async def compute_team_summary(
         avg_compactness_m=float(np.mean(compactnesses)) if compactnesses else None,
         total_distance_m=total_dist if total_dist else None,
         estimated_possession_pct=None,  # filled by possession module
-        current_formation=None,          # filled by formation module
+        current_formation=current_formation or "4-3-3",
         heatmap_grid=heatmap_grid,
     )
+

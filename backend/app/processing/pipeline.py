@@ -19,7 +19,17 @@ Stages
 
 Progress is updated in the DB at each stage (0–100%).
 """
-from __future__ import annotations
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+import torch
+
+# Fix PyTorch 2.6+ weights_only issue with ultralytics checkpoints
+_orig_torch_load = torch.load
+def _safe_torch_load(*args, **kwargs):
+    if "weights_only" not in kwargs:
+        kwargs["weights_only"] = False
+    return _orig_torch_load(*args, **kwargs)
+torch.load = _safe_torch_load
 
 import json
 import time
@@ -44,7 +54,7 @@ from app.analytics.possession import nearest_team, smooth_possession
 from app.analytics.tactical_phases import classify_phase
 from app.detection.yolo_detector import YOLODetector
 from app.models.temporal_model import TemporalFormationTransformer
-from app.pitch.calibration import load_homography
+from app.pitch.calibration import load_homography, estimate_default_homography
 from app.pitch.homography import HomographyTransformer
 from app.teams.classifier import TeamClassifier
 from app.tracking.byte_tracker import run_tracking_on_frame
@@ -107,6 +117,7 @@ def run_pipeline(
     except Exception as exc:
         logger.exception("Pipeline failed for match {}", match_id)
         _set_error(session, match_id, str(exc))
+        raise
     finally:
         session.close()
 
@@ -162,6 +173,17 @@ def _run(session, match_id: str, sample_fps: int, yolo_model_path: str) -> None:
 
     # Homography transformer
     H = load_homography(match.homography_matrix)
+    if H is None:
+        logger.info("No manual calibration found; using estimated broadcast pitch homography.")
+        H = estimate_default_homography(
+            img_width=cap_width,
+            img_height=cap_height,
+            pitch_length_m=settings.pitch_length_m,
+            pitch_width_m=settings.pitch_width_m,
+        )
+        match.homography_matrix = json.dumps(H.tolist())
+        session.commit()
+
     transformer = HomographyTransformer(
         H,
         pitch_length_m=settings.pitch_length_m,
@@ -170,8 +192,13 @@ def _run(session, match_id: str, sample_fps: int, yolo_model_path: str) -> None:
 
     # ── Load trained formation classifier ─────────────────────────────────────
     formation_model = None
-    _model_path = Path(__file__).parent.parent.parent.parent / "models" / "transformer" / "best_model.pt"
-    if _model_path.exists():
+    possible_paths = [
+        Path(__file__).parent.parent.parent.parent / "models" / "transformer" / "best_model.pt",
+        Path("models/transformer/best_model.pt"),
+        Path(settings.models_dir) / "transformer" / "best_model.pt",
+    ]
+    _model_path = next((p for p in possible_paths if p.exists()), None)
+    if _model_path:
         try:
             from app.models.temporal_model import TransformerFormationClassifier
             formation_model = TransformerFormationClassifier.load(str(_model_path))
@@ -179,7 +206,7 @@ def _run(session, match_id: str, sample_fps: int, yolo_model_path: str) -> None:
         except Exception as exc:
             logger.warning("Could not load formation model ({}), using rule-based fallback.", exc)
     else:
-        logger.info("No trained formation model at {} — using rule-based detector.", _model_path)
+        logger.info("No trained formation model found — using rule-based detector.")
 
     _update_progress(session, match_id, 5)
 
@@ -383,6 +410,7 @@ def _run(session, match_id: str, sample_fps: int, yolo_model_path: str) -> None:
     if match_obj:
         match_obj.status = "completed"
         match_obj.progress = 100
+        match_obj.error_message = None
         session.commit()
 
     logger.info("Pipeline complete for match {}", match_id)

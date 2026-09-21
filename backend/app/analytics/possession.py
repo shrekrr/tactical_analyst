@@ -98,12 +98,6 @@ async def build_possession_timeline(
     )
     ball_points = ball_result.scalars().all()
 
-    if not ball_points:
-        return []
-
-    frames = sorted({bp.frame for bp in ball_points})
-    ball_by_frame = {bp.frame: bp for bp in ball_points}
-
     # Load all outfield player positions
     tp_result = await db.execute(
         select(TrackingPoint, Player, Team)
@@ -118,38 +112,66 @@ async def build_possession_timeline(
     )
     rows = tp_result.all()
 
+    if not rows:
+        return []
+
     player_by_frame: dict = defaultdict(list)
+    frame_ts: dict = {}
     for tp, player, team in rows:
         if tp.pitch_x is not None and tp.pitch_y is not None:
             player_by_frame[tp.frame].append(
                 (tp.pitch_x, tp.pitch_y, team.label if team else "unknown")
             )
+            frame_ts[tp.frame] = tp.timestamp_s
 
-    # Raw possession per frame
+    all_frames = sorted(player_by_frame.keys())
+    if not all_frames:
+        return []
+
     raw: List[Optional[str]] = []
     timeline_frames = []
-    for frame in frames:
-        bp = ball_by_frame.get(frame)
-        if bp is None or bp.pitch_x is None or bp.pitch_y is None:
-            raw.append(None)
-        else:
-            raw.append(nearest_team(bp.pitch_x, bp.pitch_y, player_by_frame.get(frame, [])))
-        timeline_frames.append(frame)
+
+    if ball_points:
+        ball_by_frame = {bp.frame: bp for bp in ball_points}
+        frames = sorted({bp.frame for bp in ball_points})
+        for frame in frames:
+            bp = ball_by_frame.get(frame)
+            if bp is None or bp.pitch_x is None or bp.pitch_y is None:
+                raw.append(None)
+            else:
+                raw.append(nearest_team(bp.pitch_x, bp.pitch_y, player_by_frame.get(frame, [])))
+            timeline_frames.append(frame)
+    else:
+        # Fallback when ball is not detected: territorial field tilt / player centroid
+        for frame in all_frames:
+            pts = player_by_frame[frame]
+            pts_a = [p[0] for p in pts if p[2] == "team_a"]
+            pts_b = [p[0] for p in pts if p[2] == "team_b"]
+            if pts_a and pts_b:
+                raw.append("team_a" if np.mean(pts_a) >= 52.5 else "team_b")
+            elif pts_a:
+                raw.append("team_a")
+            elif pts_b:
+                raw.append("team_b")
+            else:
+                raw.append(None)
+            timeline_frames.append(frame)
 
     smoothed = smooth_possession(raw, window=10)
 
     timeline = []
     for frame, label in zip(timeline_frames, smoothed):
-        bp = ball_by_frame.get(frame)
+        ts = frame_ts.get(frame, float(frame) / 25.0)
         timeline.append(
             {
                 "frame": frame,
-                "timestamp_s": bp.timestamp_s if bp else 0.0,
+                "timestamp_s": round(ts, 2),
                 "team_label": label,
             }
         )
 
     return timeline
+
 
 
 def aggregate_possession(

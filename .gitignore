@@ -59,6 +59,9 @@ training/datasets/*.npy
 training/datasets/split_manifest.json
 
 # Model weights and TensorBoard runs
+*.pt
+*.pth
+*.onnx
 models/**/*.pt
 models/**/*.pth
 models/**/*.onnx

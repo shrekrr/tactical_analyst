@@ -85,8 +85,16 @@ export const getPlayerDetail = (matchId: string, playerId: string): Promise<Play
 
 // ── Video URL helper ──────────────────────────────────────────────────────────
 
-export const getVideoUrl = (filename: string): string =>
-  `${BASE_URL}/videos/${filename}`;
+export const getVideoUrl = (idOrFilename: string): string => {
+  if (!idOrFilename) return '';
+  const clean = idOrFilename.replace(/^\/videos\//, '');
+  if (clean.includes('.')) {
+    return `${BASE_URL}/videos/${clean}`;
+  }
+  return `${BASE_URL}/videos/${clean}.mp4`;
+};
+
+
 
 // ── WebSocket helper ──────────────────────────────────────────────────────────
 

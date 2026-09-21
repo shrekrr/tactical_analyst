@@ -116,6 +116,14 @@ class Player(Base):
         back_populates="player", cascade="all, delete-orphan"
     )
 
+    @property
+    def team_label(self) -> Optional[str]:
+        return self.team.label if self.team else None
+
+    @property
+    def team_color(self) -> Optional[str]:
+        return self.team.color_hex if self.team else None
+
 
 # ── TrackingPoint ──────────────────────────────────────────────────────────────
 

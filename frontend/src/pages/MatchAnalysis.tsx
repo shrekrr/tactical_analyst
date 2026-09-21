@@ -31,10 +31,22 @@ export const MatchAnalysis: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [videoSeek, setVideoSeek] = useState<number | undefined>(undefined);
   const [activeTab, setActiveTab] = useState<'pitch' | 'heatmap' | 'shape'>('pitch');
+  const [activeSection, setActiveSection] = useState<'analysis' | 'players'>(
+    window.location.pathname.includes('/players/') ? 'players' : 'analysis'
+  );
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fps = match?.fps || 25;
   const sampleFps = match?.sample_fps || 5;
+
+  useEffect(() => {
+    if (window.location.pathname.includes('/players/')) {
+      setTimeout(() => {
+        document.getElementById('players-section')?.scrollIntoView({ behavior: 'smooth' });
+      }, 500);
+    }
+  }, []);
+
 
   const loadMatch = useCallback(async () => {
     if (!matchId) return;
@@ -46,6 +58,10 @@ export const MatchAnalysis: React.FC = () => {
         setAnalytics(a);
         setLoading(false);
         if (pollRef.current) clearInterval(pollRef.current);
+        try {
+          const snap0 = await getFrameSnapshot(matchId, 0);
+          if (snap0) setSnapshot(snap0);
+        } catch { /* ok */ }
       } else if (m.status === 'failed') {
         setError(m.status);
         setLoading(false);
@@ -164,10 +180,24 @@ export const MatchAnalysis: React.FC = () => {
           </div>
         </div>
         <div className="mt-2 border-t border-slate-700/50 pt-2 space-y-0.5">
-          <div className="nav-item active"><Activity size={15} /> Analysis</div>
-          <div className="nav-item" onClick={() => navigate(`/players/${matchId}`)}>
+          <button
+            onClick={() => {
+              setActiveSection('analysis');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            className={`nav-item w-full text-left flex items-center gap-2 ${activeSection === 'analysis' ? 'active' : ''}`}
+          >
+            <Activity size={15} /> Analysis
+          </button>
+          <button
+            onClick={() => {
+              setActiveSection('players');
+              document.getElementById('players-section')?.scrollIntoView({ behavior: 'smooth' });
+            }}
+            className={`nav-item w-full text-left flex items-center gap-2 ${activeSection === 'players' ? 'active' : ''}`}
+          >
             <Users size={15} /> Players
-          </div>
+          </button>
         </div>
       </aside>
 
@@ -179,7 +209,7 @@ export const MatchAnalysis: React.FC = () => {
             {/* Video */}
             <div className="space-y-3">
               <VideoPlayer
-                src={getVideoUrl(match.filename)}
+                src={getVideoUrl(match.id)}
                 onTimeUpdate={(t) => handleTimeUpdate(t)}
                 seekTo={videoSeek}
               />
@@ -318,7 +348,7 @@ export const MatchAnalysis: React.FC = () => {
           />
 
           {/* Player table */}
-          <div className="card overflow-hidden">
+          <div id="players-section" className="card overflow-hidden scroll-mt-6">
             <div className="card-header">
               <span className="text-xs font-medium text-slate-300 uppercase tracking-widest">Players</span>
               <span className="text-xs text-slate-500">{analytics?.players.filter(p => !p.is_referee).length} detected</span>

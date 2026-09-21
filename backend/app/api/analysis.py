@@ -2,7 +2,7 @@
 Analysis trigger + status endpoints.
 """
 import asyncio
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from loguru import logger
@@ -22,13 +22,13 @@ from app.pitch.calibration import compute_homography_from_points
 
 router = APIRouter()
 
-# Global executor for CPU-bound processing
-_executor = ProcessPoolExecutor(max_workers=1)
+# Global executor for background pipeline processing
+_executor = ThreadPoolExecutor(max_workers=2)
 
 
 async def _run_pipeline(match_id: str, sample_fps: int, yolo_model: str | None) -> None:
-    """Run the CV pipeline in a separate process."""
-    from app.processing.pipeline import run_pipeline
+    """Run the CV pipeline in a worker thread."""
+    from app.processing.pipeline import run_pipeline, _set_error, _get_sync_db
 
     loop = asyncio.get_event_loop()
     try:
@@ -41,6 +41,13 @@ async def _run_pipeline(match_id: str, sample_fps: int, yolo_model: str | None) 
         )
     except Exception as exc:
         logger.exception("Pipeline failed for match {}", match_id)
+        session = _get_sync_db()
+        try:
+            _set_error(session, match_id, str(exc))
+        except Exception:
+            pass
+        finally:
+            session.close()
 
 
 @router.post("/{match_id}/analyze", response_model=MatchStatusResponse)
@@ -57,14 +64,15 @@ async def start_analysis(
     if match is None:
         raise HTTPException(status_code=404, detail="Match not found.")
 
-    if match.status in ("processing", "completed"):
+    if match.status == "processing":
         raise HTTPException(
             status_code=409,
-            detail=f"Match is already {match.status}.",
+            detail="Match is currently processing.",
         )
 
     match.status = "queued"
     match.progress = 0
+    match.error_message = None
     match.sample_fps = body.sample_fps
     await db.flush()
 

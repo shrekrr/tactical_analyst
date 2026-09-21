@@ -1,6 +1,15 @@
-"""
-FastAPI application entry point.
-"""
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+import torch
+
+# Fix PyTorch 2.6+ weights_only issue with ultralytics checkpoints
+_orig_torch_load = torch.load
+def _safe_torch_load(*args, **kwargs):
+    if "weights_only" not in kwargs:
+        kwargs["weights_only"] = False
+    return _orig_torch_load(*args, **kwargs)
+torch.load = _safe_torch_load
+
 import asyncio
 from contextlib import asynccontextmanager
 

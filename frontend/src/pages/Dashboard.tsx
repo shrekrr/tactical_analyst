@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Play, Clock, CheckCircle, Loader2, AlertCircle, Cpu } from 'lucide-react';
-import { listMatches, getHealth } from '../services/api';
+import { listMatches, getHealth, startAnalysis } from '../services/api';
 import type { MatchInfo, HealthResponse } from '../types/analysis';
 
 function formatBytes(b: number | null): string {
@@ -40,23 +40,24 @@ export const Dashboard: React.FC = () => {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const [m, h] = await Promise.all([listMatches(), getHealth()]);
-        setMatches(m);
-        setHealth(h);
-      } catch {
-        // Server may not be running yet
-      }
+  const loadMatches = React.useCallback(async () => {
+    try {
+      const [m, h] = await Promise.all([listMatches(), getHealth()]);
+      setMatches(m);
+      setHealth(h);
+    } catch {
+      // Server may not be running yet
+    } finally {
       setLoading(false);
-    };
-    load();
-
-    // Poll for status updates every 5s
-    const interval = setInterval(load, 5000);
-    return () => clearInterval(interval);
+    }
   }, []);
+
+  useEffect(() => {
+    loadMatches();
+    // Poll for status updates every 5s
+    const interval = setInterval(loadMatches, 5000);
+    return () => clearInterval(interval);
+  }, [loadMatches]);
 
   return (
     <div className="min-h-screen bg-surface-900 flex">
@@ -131,64 +132,97 @@ export const Dashboard: React.FC = () => {
           ) : (
             <div className="space-y-3">
               {matches.map(match => (
-                <div
-                  key={match.id}
-                  className="card p-4 flex items-center gap-4 cursor-pointer hover:border-slate-600 transition-colors"
-                  onClick={() => match.status === 'completed' ? navigate(`/match/${match.id}`) : undefined}
-                >
-                  {/* Video thumbnail placeholder */}
-                  <div className="w-20 h-14 bg-surface-700 rounded-lg flex items-center justify-center shrink-0">
-                    <Play size={18} className="text-slate-500" />
-                  </div>
+                  <div
+                    key={match.id}
+                    className="card p-4 flex items-center gap-4 cursor-pointer hover:border-slate-600 transition-colors"
+                    onClick={() => navigate(`/match/${match.id}`)}
+                  >
+                    {/* Video thumbnail placeholder */}
+                    <div className="w-20 h-14 bg-surface-700 rounded-lg flex items-center justify-center shrink-0">
+                      <Play size={18} className="text-slate-500" />
+                    </div>
 
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-slate-200 truncate">{match.filename}</div>
-                    <div className="flex items-center gap-3 mt-1.5">
-                      <span className="text-xs text-slate-500">{formatDuration(match.duration_s)}</span>
-                      <span className="text-xs text-slate-600">•</span>
-                      <span className="text-xs text-slate-500">{formatBytes(match.file_size_bytes)}</span>
-                      {match.fps && (
-                        <>
-                          <span className="text-xs text-slate-600">•</span>
-                          <span className="text-xs text-slate-500">{match.fps?.toFixed(0)} FPS</span>
-                        </>
-                      )}
-                      {match.width && (
-                        <>
-                          <span className="text-xs text-slate-600">•</span>
-                          <span className="text-xs text-slate-500">{match.width}×{match.height}</span>
-                        </>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-slate-200 truncate">{match.filename}</div>
+                      <div className="flex items-center gap-3 mt-1.5">
+                        <span className="text-xs text-slate-500">{formatDuration(match.duration_s)}</span>
+                        <span className="text-xs text-slate-600">•</span>
+                        <span className="text-xs text-slate-500">{formatBytes(match.file_size_bytes)}</span>
+                        {match.fps && (
+                          <>
+                            <span className="text-xs text-slate-600">•</span>
+                            <span className="text-xs text-slate-500">{match.fps?.toFixed(0)} FPS</span>
+                          </>
+                        )}
+                        {match.width && (
+                          <>
+                            <span className="text-xs text-slate-600">•</span>
+                            <span className="text-xs text-slate-500">{match.width}×{match.height}</span>
+                          </>
+                        )}
+                      </div>
+
+                      {/* Progress bar for processing */}
+                      {match.status === 'processing' && (
+                        <div className="mt-2 progress-bar w-48">
+                          <div className="progress-fill" style={{ width: `${match.progress}%` }} />
+                        </div>
                       )}
                     </div>
 
-                    {/* Progress bar for processing */}
-                    {match.status === 'processing' && (
-                      <div className="mt-2 progress-bar w-48">
-                        <div className="progress-fill" style={{ width: `${match.progress}%` }} />
-                      </div>
-                    )}
+                    <div className="flex items-center gap-3">
+                      <StatusBadge status={match.status} progress={match.progress} />
+                      {match.status === 'completed' && (
+                        <button
+                          className="btn-secondary text-xs"
+                          onClick={e => { e.stopPropagation(); navigate(`/match/${match.id}`); }}
+                        >
+                          View Analysis →
+                        </button>
+                      )}
+                      {(match.status === 'queued' || match.status === 'processing') && (
+                        <button
+                          className="btn-secondary text-xs flex items-center gap-1.5"
+                          onClick={e => { e.stopPropagation(); navigate(`/match/${match.id}`); }}
+                        >
+                          <Loader2 size={12} className="animate-spin text-accent-green" />
+                          View Progress →
+                        </button>
+                      )}
+                      {match.status === 'failed' && (
+                        <button
+                          className="btn-primary text-xs"
+                          onClick={async e => {
+                            e.stopPropagation();
+                            try {
+                              await startAnalysis(match.id);
+                              loadMatches();
+                            } catch (err) {
+                              console.error(err);
+                            }
+                          }}
+                        >
+                          Retry Analysis
+                        </button>
+                      )}
+                      {match.status === 'uploaded' && (
+                        <button
+                          className="btn-primary text-xs"
+                          onClick={async e => {
+                            e.stopPropagation();
+                            try {
+                              await startAnalysis(match.id);
+                              loadMatches();
+                            } catch (err) {
+                              console.error(err);
+                            }
+                          }}
+                        >
+                          Start Analysis
+                        </button>
+                      )}
+                    </div>
                   </div>
-
-                  <div className="flex items-center gap-3">
-                    <StatusBadge status={match.status} progress={match.progress} />
-                    {match.status === 'completed' && (
-                      <button
-                        className="btn-secondary text-xs"
-                        onClick={e => { e.stopPropagation(); navigate(`/match/${match.id}`); }}
-                      >
-                        View Analysis →
-                      </button>
-                    )}
-                    {(match.status === 'uploaded') && (
-                      <button
-                        className="btn-primary text-xs"
-                        onClick={e => { e.stopPropagation(); navigate(`/upload`); }}
-                      >
-                        Analyze
-                      </button>
-                    )}
-                  </div>
-                </div>
               ))}
             </div>
           )}

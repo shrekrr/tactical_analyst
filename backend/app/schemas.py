@@ -67,18 +67,18 @@ class CalibrationResponse(BaseModel):
 class PlayerSummary(BaseModel):
     id: str
     tracking_id: int
-    team_label: Optional[str]
-    team_color: Optional[str]
-    total_distance_m: Optional[float]
-    avg_speed_kmh: Optional[float]
-    max_speed_kmh: Optional[float]
-    avg_x: Optional[float]
-    avg_y: Optional[float]
-    pct_defensive_third: Optional[float]
-    pct_middle_third: Optional[float]
-    pct_attacking_third: Optional[float]
-    is_goalkeeper: bool
-    is_referee: bool
+    team_label: Optional[str] = None
+    team_color: Optional[str] = None
+    total_distance_m: Optional[float] = None
+    avg_speed_kmh: Optional[float] = None
+    max_speed_kmh: Optional[float] = None
+    avg_x: Optional[float] = None
+    avg_y: Optional[float] = None
+    pct_defensive_third: Optional[float] = None
+    pct_middle_third: Optional[float] = None
+    pct_attacking_third: Optional[float] = None
+    is_goalkeeper: bool = False
+    is_referee: bool = False
 
     class Config:
         from_attributes = True

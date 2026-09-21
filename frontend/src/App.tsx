@@ -11,6 +11,7 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/upload" element={<UploadPage />} />
         <Route path="/match/:matchId" element={<MatchAnalysis />} />
+        <Route path="/players/:matchId" element={<MatchAnalysis />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

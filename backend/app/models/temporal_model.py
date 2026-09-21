@@ -184,11 +184,14 @@ class TransformerFormationClassifier:
 
     @classmethod
     def load(cls, path: str | Path) -> "TransformerFormationClassifier":
+        import inspect
         path = Path(path)
         device = "cuda" if torch.cuda.is_available() else "cpu"
         state = torch.load(str(path), map_location=device)
         config = state.get("config", {})
-        model = TemporalFormationTransformer(**config)
+        valid_keys = set(inspect.signature(TemporalFormationTransformer.__init__).parameters.keys())
+        filtered_config = {k: v for k, v in config.items() if k in valid_keys}
+        model = TemporalFormationTransformer(**filtered_config)
         model.load_state_dict(state["model_state_dict"])
         logger.info("Loaded Temporal Transformer from {}", path)
         return cls(model, device)

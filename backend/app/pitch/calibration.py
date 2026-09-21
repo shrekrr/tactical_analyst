@@ -97,3 +97,32 @@ def load_homography(matrix_json: str | None) -> np.ndarray | None:
         return np.array(json.loads(matrix_json), dtype=np.float64)
     except Exception:
         return None
+
+
+def estimate_default_homography(
+    img_width: float = 1920.0,
+    img_height: float = 1080.0,
+    pitch_length_m: float = PITCH_LENGTH_M,
+    pitch_width_m: float = PITCH_WIDTH_M,
+) -> np.ndarray:
+    """
+    Generate an estimated broadcast homography matrix based on video dimensions.
+    Maps typical broadcast camera perspective of the pitch to metric coordinates.
+    """
+    w, h = float(img_width or 1920.0), float(img_height or 1080.0)
+    img_pts = np.array([
+        [0.10 * w, 0.32 * h],
+        [0.90 * w, 0.32 * h],
+        [0.98 * w, 0.95 * h],
+        [0.02 * w, 0.95 * h],
+    ], dtype=np.float32)
+
+    pitch_pts = np.array([
+        [0.0, 0.0],
+        [pitch_length_m, 0.0],
+        [pitch_length_m, pitch_width_m],
+        [0.0, pitch_width_m],
+    ], dtype=np.float32)
+
+    return cv2.getPerspectiveTransform(img_pts, pitch_pts)
+
